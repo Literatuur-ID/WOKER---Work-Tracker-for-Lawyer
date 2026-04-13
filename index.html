@@ -61,10 +61,8 @@
         ::-webkit-scrollbar-track { background: #f8fafc; }
         ::-webkit-scrollbar-thumb { background: var(--midnight-1); border-radius: 10px; }
         
-        /* Stop zoom on iPhone input focus */
         input, textarea, select { font-size: 16px !important; }
-        
-        .tab-transition { transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1); }
+        .transition-standard { transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1); }
     </style>
 </head>
 <body class="overflow-x-hidden">
@@ -117,7 +115,15 @@
 
             useEffect(() => {
                 const init = async () => {
-                    if (!window.FB) return;
+                    let retries = 0;
+                    while (!window.FB && retries < 50) {
+                        await new Promise(res => setTimeout(res, 100));
+                        retries++;
+                    }
+                    if (!window.FB) {
+                        setModalMessage("Gagal memuat modul database. Segarkan halaman.");
+                        return;
+                    }
                     const { auth, signInAnonymously, signInWithCustomToken } = window.FB;
                     try {
                         if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
@@ -192,9 +198,13 @@
 
             const handleSubmit = async (e) => {
                 e.preventDefault();
-                if (!isLoggedIn) return;
-                const { db, appId, collection, addDoc } = window.FB;
-                const safeKey = `data_${accessKey.trim().toLowerCase().replace(/[^a-z0-9]/g, '_')}`;
+                if (!isLoggedIn || !window.FB) return;
+                const { db, auth, appId, collection, addDoc } = window.FB;
+                if (!auth.currentUser) {
+                    setModalMessage("Sesi koneksi terputus. Silakan segarkan halaman.");
+                    return;
+                }
+                if (!formData.client || !formData.hours) return;
                 const newEntry = {
                     client: formData.client.toUpperCase(),
                     task: formData.task,
@@ -205,14 +215,16 @@
                     createdAt: new Date().toISOString()
                 };
                 try {
+                    const safeKey = `data_${accessKey.trim().toLowerCase().replace(/[^a-z0-9]/g, '_')}`;
                     await addDoc(collection(db, 'artifacts', appId, 'public', 'data', safeKey), newEntry);
                     setFormData({ ...formData, client: '', task: '', hours: '', associates: '' });
-                } catch (e) { setModalMessage("Simpan gagal."); }
+                } catch (err) { setModalMessage("Gagal menyimpan data ke awan."); }
             };
 
             const handleDelete = async (id) => {
                 if (!confirm("Hapus entri?")) return;
-                const { db, appId, doc, deleteDoc } = window.FB;
+                const { db, auth, appId, doc, deleteDoc } = window.FB;
+                if (!auth.currentUser) return;
                 const safeKey = `data_${accessKey.trim().toLowerCase().replace(/[^a-z0-9]/g, '_')}`;
                 try { await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', safeKey, id)); } 
                 catch (e) { setModalMessage("Hapus gagal."); }
@@ -266,8 +278,10 @@
                                             <span className="text-sm font-bold text-slate-500 group-hover:text-black">Ingat Saya</span>
                                         </label>
                                     </div>
-                                    <button type="submit" disabled={!isValidFormat} className={`w-full font-black py-6 rounded-[2rem] text-xs uppercase tracking-widest tab-transition ${isValidFormat ? 'bg-[#0f0e32] text-white shadow-xl shadow-[#0f0e32]/20 active:scale-95' : 'bg-slate-100 text-slate-300 cursor-not-allowed'}`}>Masuk</button>
-                                    <p className="text-[10px] text-slate-400 font-bold uppercase text-center mt-10 opacity-60 italic leading-relaxed">KODE INI RAHASIA. MASUKKAN KODE PADA PERANGKAT LAINNYA UNTUK MASUK KE AKUN ANDA.</p>
+                                    <button type="submit" disabled={!isValidFormat || !isAuthReady} className={`w-full font-black py-6 rounded-[2rem] text-xs uppercase tracking-widest tab-transition ${isValidFormat && isAuthReady ? 'bg-[#0f0e32] text-white shadow-xl shadow-[#0f0e32]/20 active:scale-95' : 'bg-slate-100 text-slate-300 cursor-not-allowed'}`}>
+                                        {!isAuthReady ? "Menyiapkan Sistem..." : "Masuk"}
+                                    </button>
+                                    <p className="text-[10px] text-slate-400 font-bold uppercase text-center mt-10 opacity-60 italic leading-relaxed">KODE INI RAHASIA. MASUKKAN KODE PADA PERANGKAT LAINNYU UNTUK MASUK KE AKUN ANDA.</p>
                                 </form>
                             </div>
                         </div>
@@ -327,7 +341,7 @@
 
                         <div className="flex bg-white rounded-[3rem] p-2 border border-slate-100 mb-12 shadow-sm font-bold">
                             <button onClick={() => setActiveTab('input')} className={`flex-1 py-5 rounded-[2.5rem] text-xs tracking-[0.2em] tab-transition ${activeTab === 'input' ? 'bg-[#0f0e32] text-white shadow-2xl' : 'text-slate-400 hover:bg-slate-50'}`}>PEKERJAAN</button>
-                            <button onClick={() => setActiveTab('rekap')} className={`flex-1 py-5 rounded-[2.5rem] text-xs tracking-[0.2em] tab-transition ${activeTab === 'rekap' ? 'bg-[#0f0e32] text-white shadow-2xl' : 'text-slate-400 hover:bg-slate-50'}`}>RINGKASAN BULANAN</button>
+                            <button onClick={() => setActiveTab('rekap')} className={`flex-1 py-5 rounded-[2.5rem] text-xs tracking-[0.2em] tab-transition ${activeTab === 'rekap' ? 'bg-[#0f0e32] text-white shadow-2xl' : 'text-slate-400 hover:bg-slate-50'}`}>LAPORAN BULANAN</button>
                         </div>
 
                         {activeTab === 'input' ? (
@@ -336,7 +350,7 @@
                                     <form onSubmit={handleSubmit} className="bg-white p-10 rounded-[4rem] legal-card space-y-8 lg:sticky lg:top-48 border-t-[16px] border-t-[#2c2a7b]">
                                         <h3 className="font-black text-[#0f0e32] text-xl italic border-b pb-6 mb-2 uppercase tracking-tighter">Giat apa hari ini?</h3>
                                         <div className="space-y-2">
-                                            <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Klien / File Code</label>
+                                            <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Klien</label>
                                             <input required type="text" value={formData.client} onChange={e => setFormData({...formData, client: e.target.value})} className="w-full p-4 bg-slate-50 border border-slate-200 rounded-2xl outline-none focus:border-[#2c2a7b] font-bold placeholder:text-slate-300" placeholder="e.g. BANK INDONESIA" />
                                         </div>
                                         <div className="grid grid-cols-2 gap-4">
@@ -351,7 +365,7 @@
                                         </div>
                                         <div className="space-y-2">
                                             <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Associates</label>
-                                            <input type="text" value={formData.associates} onChange={e => setFormData({...formData, associates: e.target.value})} className="w-full p-4 bg-slate-50 border border-slate-200 rounded-2xl outline-none font-bold" placeholder="e.g. Tana, Tini, Tunu" />
+                                            <input type="text" value={formData.associates} onChange={e => setFormData({...formData, associates: e.target.value})} className="w-full p-4 bg-slate-50 border border-slate-200 rounded-2xl outline-none font-bold placeholder:text-slate-300" placeholder="e.g. Tana, Tini, & Tunu" />
                                         </div>
                                         <div className="space-y-2">
                                             <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Detail Pekerjaan</label>
@@ -361,7 +375,7 @@
                                     </form>
                                 </div>
                                 <div className="lg:col-span-7 space-y-8">
-                                    <h3 className="font-black text-[#0f0e32] text-sm uppercase tracking-[0.4em] px-8">Riwayat Log Terbaru</h3>
+                                    <h3 className="font-black text-[#0f0e32] text-sm uppercase tracking-[0.4em] px-8">RIWAYAT PEKERJAAN</h3>
                                     {filteredEntries.map(entry => (
                                         <div key={entry.id} className="bg-white p-8 rounded-[4rem] border border-slate-100 shadow-sm flex items-start gap-8 group relative hover:border-[#2c2a7b]/40 transition-all duration-300">
                                             <div className="bg-[#0f0e32] text-white w-20 h-20 rounded-[2.5rem] flex flex-col items-center justify-center shrink-0 shadow-xl border border-[#232162]">
@@ -387,9 +401,9 @@
                             </div>
                         ) : (
                             <div className="space-y-14 animate-in fade-in duration-500">
-                                <div className="bg-gradient-to-br from-[#0f0e32] via-[#161440] to-[#232162] text-white p-16 md:p-24 rounded-[6rem] shadow-2xl flex flex-col md:flex-row justify-between items-center gap-16 border border-[#2c2a7b]/30 relative overflow-hidden">
-                                    <div className="relative z-10 text-center md:text-left">
-                                        <p className="text-blue-300 text-[12px] font-black uppercase tracking-[0.6em] mb-8 opacity-70">Total Billable Hours</p>
+                                <div className="bg-gradient-to-br from-[#0f0e32] via-[#161440] to-[#232162] text-white p-16 md:p-24 rounded-[6rem] shadow-2xl flex flex-col md:flex-row justify-between items-center gap-16 border border-[#2c2a7b]/30 relative overflow-hidden text-center md:text-left">
+                                    <div className="relative z-10">
+                                        <p className="text-blue-300 text-[12px] font-black uppercase tracking-[0.6em] mb-8 opacity-70">TOTAL WORKING HOURS</p>
                                         <div className="text-9xl font-black tracking-tighter leading-none mb-10">{totalHours.toFixed(1)} <span className="text-4xl font-light text-slate-400 lowercase italic">h</span></div>
                                         <p className="text-slate-400 font-bold italic text-base uppercase tracking-[0.5em] border-l-[6px] border-blue-500 pl-10 ml-2">{months[currentMonth]} {currentYear}</p>
                                     </div>
@@ -417,8 +431,8 @@
                                             <thead>
                                                 <tr className="border-b-4 border-slate-50 bg-slate-50/50">
                                                     <th className="px-12 py-12 font-black uppercase text-slate-400 text-[12px] tracking-[0.5em]">Tgl</th>
-                                                    <th className="px-12 py-12 font-black uppercase text-slate-400 text-[12px] tracking-[0.5em]">Identitas Klien</th>
-                                                    <th className="px-12 py-12 font-black uppercase text-slate-400 text-[12px] tracking-[0.5em]">Tim Rekan</th>
+                                                    <th className="px-12 py-12 font-black uppercase text-slate-400 text-[12px] tracking-[0.5em]">KLIEN</th>
+                                                    <th className="px-12 py-12 font-black uppercase text-slate-400 text-[12px] tracking-[0.5em]">ASSOCIATES</th>
                                                     <th className="px-12 py-12 font-black uppercase text-slate-400 text-[12px] tracking-[0.5em] text-right">Durasi</th>
                                                 </tr>
                                             </thead>
@@ -464,7 +478,7 @@
                         <div className="fixed inset-0 bg-black/85 backdrop-blur-3xl z-[2000] flex items-center justify-center p-8 text-center">
                             <div className="bg-white rounded-[5rem] p-20 max-w-lg w-full shadow-2xl border border-slate-100 animate-in zoom-in duration-300">
                                 <div className="w-24 h-1.5 bg-[#0f0e32] mx-auto mb-10 rounded-full opacity-20"></div>
-                                <h4 className="font-black mb-6 text-[#0f0e32] text-4xl tracking-tighter uppercase italic">Sistem Info</h4>
+                                <h4 className="font-black mb-6 text-[#0f0e32] text-4xl tracking-tighter uppercase italic">Info</h4>
                                 <p className="text-slate-600 text-xl mb-14 leading-relaxed font-bold">{modalMessage}</p>
                                 <button onClick={() => setModalMessage(null)} className="w-full bg-[#0f0e32] text-white font-black py-8 rounded-[3rem] uppercase tracking-[0.3em] shadow-2xl active:scale-95 transition-standard text-sm">Tutup Dialog</button>
                             </div>
