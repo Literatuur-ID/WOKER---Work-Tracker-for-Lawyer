@@ -25,16 +25,20 @@
         import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, collection, doc, addDoc, deleteDoc, onSnapshot, query } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
-        const firebaseConfig = JSON.parse(__firebase_config);
-        const app = initializeApp(firebaseConfig);
-        const auth = getAuth(app);
-        const db = getFirestore(app);
-        const appId = typeof __app_id !== 'undefined' ? __app_id : 'woker-legal-app';
+        try {
+            const firebaseConfig = JSON.parse(__firebase_config);
+            const app = initializeApp(firebaseConfig);
+            const auth = getAuth(app);
+            const db = getFirestore(app);
+            const appId = typeof __app_id !== 'undefined' ? __app_id : 'woker-legal-app';
 
-        window.FB = { 
-            db, auth, appId, collection, doc, addDoc, deleteDoc, onSnapshot, 
-            query, signInAnonymously, signInWithCustomToken, onAuthStateChanged 
-        };
+            window.FB = { 
+                db, auth, appId, collection, doc, addDoc, deleteDoc, onSnapshot, 
+                query, signInAnonymously, signInWithCustomToken, onAuthStateChanged 
+            };
+        } catch (e) {
+            console.error("Firebase Init Error:", e);
+        }
     </script>
 
     <style>
@@ -52,7 +56,7 @@
             -webkit-font-smoothing: antialiased;
         }
         .legal-card { 
-            box-shadow: 0 10px 30px -10px rgb(0 0 0 / 0.1); 
+            box-shadow: 0 10px 40px -10px rgb(0 0 0 / 0.1); 
             border: 1px solid #f1f5f9;
         }
         @keyframes spin { to { transform: rotate(360deg); } }
@@ -63,6 +67,15 @@
         
         input, textarea, select { font-size: 16px !important; }
         .transition-standard { transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1); }
+        
+        @media (min-width: 1024px) {
+            .app-container {
+                display: grid;
+                grid-template-columns: 440px 1fr;
+                gap: 3rem;
+                align-items: start;
+            }
+        }
     </style>
 </head>
 <body class="overflow-x-hidden">
@@ -83,9 +96,7 @@
                 const response = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
                 const result = await response.json();
                 return result.candidates?.[0]?.content?.parts?.[0]?.text || "Gagal mendapatkan analisis AI.";
-            } catch (error) {
-                return "Koneksi AI terhambat.";
-            }
+            } catch (error) { return "Koneksi AI terputus."; }
         }
 
         const IconTrash = () => (
@@ -94,6 +105,7 @@
 
         function App() {
             const [isAuthReady, setIsAuthReady] = useState(false);
+            const [authError, setAuthError] = useState(false);
             const [isLoggedIn, setIsLoggedIn] = useState(!!localStorage.getItem('woker_access_key'));
             const [accessKey, setAccessKey] = useState(localStorage.getItem('woker_access_key') || '');
             const [userName, setUserName] = useState(localStorage.getItem('woker_user_name') || '');
@@ -106,37 +118,53 @@
             const [isAiLoading, setIsAiLoading] = useState(false);
             const [aiAnalysis, setAiAnalysis] = useState(null);
             const [modalMessage, setModalMessage] = useState(null);
+            const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
             const [isCloudSyncing, setIsCloudSyncing] = useState(false);
 
+            // Validasi Format XXX-0000
             const isValidFormat = useMemo(() => {
-                const regex = /^[A-Z]{3}-[0-9]{4}$/i;
+                const regex = /^[A-Z]{3}-[0-9]{4}$/;
                 return regex.test(loginInput);
             }, [loginInput]);
 
-            useEffect(() => {
-                const init = async () => {
-                    let retries = 0;
-                    while (!window.FB && retries < 50) {
-                        await new Promise(res => setTimeout(res, 100));
-                        retries++;
-                    }
-                    if (!window.FB) {
-                        setModalMessage("Gagal memuat modul database. Segarkan halaman.");
-                        return;
-                    }
-                    const { auth, signInAnonymously, signInWithCustomToken } = window.FB;
-                    try {
-                        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-                            await signInWithCustomToken(auth, __initial_auth_token);
-                        } else {
-                            await signInAnonymously(auth);
-                        }
-                        setIsAuthReady(true);
-                    } catch (e) { setModalMessage("Gagal terhubung ke Cloud."); }
-                };
-                init();
-            }, []);
+            // Handler input dengan Auto-Hyphenation
+            const handleCodeInputChange = (e) => {
+                let val = e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '');
+                
+                if (val.length > 3) {
+                    val = val.slice(0, 3) + '-' + val.slice(3, 7);
+                } else {
+                    val = val.slice(0, 3);
+                }
+                setLoginInput(val);
+            };
 
+            // --- Authentication Initialization ---
+            useEffect(() => {
+                let interval;
+                const checkFB = () => {
+                    if (window.FB) {
+                        clearInterval(interval);
+                        const { auth, signInAnonymously, signInWithCustomToken } = window.FB;
+                        const login = async () => {
+                            try {
+                                if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                                    await signInWithCustomToken(auth, __initial_auth_token);
+                                } else {
+                                    await signInAnonymously(auth);
+                                }
+                                setIsAuthReady(true);
+                            } catch (e) { setAuthError(true); }
+                        };
+                        login();
+                    }
+                };
+                interval = setInterval(checkFB, 100);
+                const timer = setTimeout(() => { if (!isAuthReady) setAuthError(true); }, 8000);
+                return () => { clearInterval(interval); clearTimeout(timer); };
+            }, [isAuthReady]);
+
+            // --- Realtime Data Sync ---
             useEffect(() => {
                 if (!isAuthReady || !isLoggedIn || !accessKey || userName === '' || !window.FB) return;
                 const { db, appId, collection, onSnapshot } = window.FB;
@@ -188,22 +216,21 @@
                 localStorage.setItem('woker_user_name', name);
             };
 
-            const handleLogout = () => {
-                if(!confirm("Anda akan keluar?")) return;
+            const confirmLogout = () => {
                 localStorage.removeItem('woker_access_key');
                 localStorage.removeItem('woker_user_name');
                 setIsLoggedIn(false);
                 setAccessKey(''); setUserName(''); setLoginInput(''); setEntries([]);
+                window.location.reload();
             };
 
             const handleSubmit = async (e) => {
                 e.preventDefault();
-                if (!isLoggedIn || !window.FB) return;
-                const { db, auth, appId, collection, addDoc } = window.FB;
-                if (!auth.currentUser) {
-                    setModalMessage("Sesi koneksi terputus. Silakan segarkan halaman.");
+                if (!isLoggedIn || !window.FB?.auth?.currentUser) {
+                    setModalMessage("Koneksi terputus. Silakan muat ulang halaman.");
                     return;
                 }
+                const { db, appId, collection, addDoc } = window.FB;
                 if (!formData.client || !formData.hours) return;
                 const newEntry = {
                     client: formData.client.toUpperCase(),
@@ -218,13 +245,12 @@
                     const safeKey = `data_${accessKey.trim().toLowerCase().replace(/[^a-z0-9]/g, '_')}`;
                     await addDoc(collection(db, 'artifacts', appId, 'public', 'data', safeKey), newEntry);
                     setFormData({ ...formData, client: '', task: '', hours: '', associates: '' });
-                } catch (err) { setModalMessage("Gagal menyimpan data ke awan."); }
+                } catch (err) { setModalMessage("Simpan gagal."); }
             };
 
             const handleDelete = async (id) => {
-                if (!confirm("Hapus entri?")) return;
-                const { db, auth, appId, doc, deleteDoc } = window.FB;
-                if (!auth.currentUser) return;
+                if (!confirm("Hapus entri ini?")) return;
+                const { db, appId, doc, deleteDoc } = window.FB;
                 const safeKey = `data_${accessKey.trim().toLowerCase().replace(/[^a-z0-9]/g, '_')}`;
                 try { await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', safeKey, id)); } 
                 catch (e) { setModalMessage("Hapus gagal."); }
@@ -245,7 +271,7 @@
 
             const exportExcel = () => {
                 if (filteredEntries.length === 0) return;
-                const data = filteredEntries.map(e => ({ "Tanggal": e.date, "Klien": e.client, "Pekerjaan": e.task, "Rekan": e.associates, "Jam": e.hours }));
+                const data = filteredEntries.map(e => ({ "Tanggal": e.date, "Klien": e.client, "Pekerjaan": e.task, "Associates": e.associates, "Jam": e.hours }));
                 const ws = XLSX.utils.json_to_sheet(data);
                 const wb = XLSX.utils.book_new();
                 XLSX.utils.book_append_sheet(wb, ws, "Laporan");
@@ -254,21 +280,23 @@
 
             if (!isLoggedIn) {
                 return (
-                    <div className="min-h-screen bg-white flex flex-col items-center justify-center p-4">
-                        <div className="w-full max-w-md bg-white rounded-[4rem] overflow-hidden shadow-2xl border border-slate-100">
-                            <div className="bg-[#0f0e32] p-12 text-center text-white">
-                                <span className="text-6xl font-black italic tracking-tighter uppercase">Woker</span>
+                    <div className="min-h-screen bg-white flex flex-col items-center justify-center p-6">
+                        <div className="w-full max-w-md bg-white rounded-[3.5rem] overflow-hidden shadow-2xl border border-slate-50">
+                            <div className="bg-[#0f0e32] py-16 text-center text-white">
+                                <span className="text-7xl font-black italic tracking-tighter uppercase leading-none">Woker</span>
                             </div>
-                            <div className="p-8 pt-12 pb-14">
-                                <h2 className="text-4xl font-black text-slate-900 mb-4 tracking-tight uppercase">Hi, Wokers!</h2>
+                            <div className="p-10 pt-14 pb-16">
+                                <h2 className="text-4xl font-black text-slate-900 mb-4 tracking-tight uppercase leading-none">Hi, Wokers!</h2>
                                 <p className="text-slate-500 font-medium text-sm mb-12">Masukkan Kode Rahasia anda.</p>
                                 <form onSubmit={handleLogin} className="space-y-10">
-                                    <div className="space-y-4">
+                                    <div className="space-y-5">
                                         <input 
-                                            name="specialCode" type="text" required value={loginInput}
-                                            onChange={(e) => setLoginInput(e.target.value)}
+                                            name="specialCode" type="text" required 
+                                            value={loginInput}
+                                            onChange={handleCodeInputChange}
                                             placeholder="XXX-0000" 
-                                            className={`w-full p-6 bg-slate-50 border-2 rounded-[2rem] outline-none text-center font-black tracking-[0.2em] uppercase text-2xl shadow-inner ${loginInput && !isValidFormat ? 'border-red-400' : 'border-slate-100 focus:border-[#2c2a7b]'}`}
+                                            maxLength="8"
+                                            className={`w-full p-7 bg-slate-50 border-2 rounded-[2.5rem] outline-none text-center font-black tracking-[0.2em] uppercase text-2xl shadow-inner transition-all ${loginInput && !isValidFormat ? 'border-red-400' : 'border-slate-100 focus:border-[#2c2a7b]'}`}
                                         />
                                         {loginInput && !isValidFormat && <p className="text-red-500 text-[10px] font-bold text-center italic">Format: 3 Huruf - 4 Angka (e.g. ABC-1234)</p>}
                                     </div>
@@ -278,10 +306,16 @@
                                             <span className="text-sm font-bold text-slate-500 group-hover:text-black">Ingat Saya</span>
                                         </label>
                                     </div>
-                                    <button type="submit" disabled={!isValidFormat || !isAuthReady} className={`w-full font-black py-6 rounded-[2rem] text-xs uppercase tracking-widest tab-transition ${isValidFormat && isAuthReady ? 'bg-[#0f0e32] text-white shadow-xl shadow-[#0f0e32]/20 active:scale-95' : 'bg-slate-100 text-slate-300 cursor-not-allowed'}`}>
-                                        {!isAuthReady ? "Menyiapkan Sistem..." : "Masuk"}
-                                    </button>
-                                    <p className="text-[10px] text-slate-400 font-bold uppercase text-center mt-10 opacity-60 italic leading-relaxed">KODE INI RAHASIA. MASUKKAN KODE PADA PERANGKAT LAINNYU UNTUK MASUK KE AKUN ANDA.</p>
+                                    {!authError ? (
+                                        <button type="submit" disabled={!isValidFormat || !isAuthReady} className={`w-full font-black py-7 rounded-[2.5rem] text-xs uppercase tracking-widest tab-transition ${isValidFormat && isAuthReady ? 'bg-[#0f0e32] text-white shadow-2xl active:scale-95' : 'bg-slate-50 text-slate-300 cursor-not-allowed'}`}>
+                                            {!isAuthReady ? "Menyiapkan Sistem..." : "Masuk"}
+                                        </button>
+                                    ) : (
+                                        <button type="button" onClick={() => window.location.reload()} className="w-full bg-red-500 text-white font-black py-7 rounded-[2.5rem] text-xs uppercase tracking-widest shadow-xl animate-bounce">Muat Ulang Sistem</button>
+                                    )}
+                                    <p className="text-[10px] text-slate-400 font-bold uppercase text-center mt-12 opacity-60 italic leading-relaxed">
+                                        ANDA DAPAT MENGAKSES AKUN PADA PERANGKAT LAIN DENGAN MEMASUKKAN KODE RAHASIA ANDA.
+                                    </p>
                                 </form>
                             </div>
                         </div>
@@ -291,15 +325,15 @@
 
             if (userName === '') {
                 return (
-                    <div className="min-h-screen bg-white flex flex-col items-center justify-center p-4">
-                        <div className="w-full max-w-md bg-white rounded-[4rem] shadow-2xl overflow-hidden border border-slate-100">
-                            <div className="bg-[#0f0e32] p-12 text-center text-white"><h2 className="text-4xl font-black italic uppercase">Woker</h2></div>
-                            <div className="p-12 pb-16">
-                                <h2 className="text-3xl font-black text-slate-900 mb-2 uppercase">Siapa Anda?</h2>
+                    <div className="min-h-screen bg-white flex flex-col items-center justify-center p-6">
+                        <div className="w-full max-w-md bg-white rounded-[3.5rem] shadow-2xl overflow-hidden border border-slate-100">
+                            <div className="bg-[#0f0e32] py-14 text-center text-white"><h2 className="text-5xl font-black italic uppercase">Woker</h2></div>
+                            <div className="p-12 pb-20 text-center">
+                                <h2 className="text-4xl font-black text-slate-900 mb-4 tracking-tight uppercase">Siapa Anda?</h2>
                                 <p className="text-slate-500 font-medium text-sm mb-12">Masukkan nama lengkap atau inisial Anda.</p>
-                                <form onSubmit={handleSetName} className="space-y-8">
-                                    <input name="username" type="text" required placeholder="e.g. Bli Juan" className="w-full p-6 bg-slate-50 border-2 border-slate-100 rounded-[2rem] outline-none text-center font-bold text-xl uppercase focus:border-[#2c2a7b]" />
-                                    <button type="submit" className="w-full bg-[#0f0e32] text-white font-black py-6 rounded-[2rem] uppercase tracking-widest shadow-lg active:scale-95 transition-standard">SIMPAN</button>
+                                <form onSubmit={handleSetName} className="space-y-10">
+                                    <input name="username" type="text" required placeholder="e.g. Bli Juan" className="w-full p-7 bg-slate-50 border-2 border-slate-100 rounded-[2.5rem] outline-none text-center font-bold text-2xl uppercase focus:border-[#2c2a7b]" />
+                                    <button type="submit" className="w-full bg-[#0f0e32] text-white font-black py-7 rounded-[2.5rem] uppercase tracking-widest active:scale-95">SIMPAN</button>
                                 </form>
                             </div>
                         </div>
@@ -310,130 +344,131 @@
             return (
                 <div className="min-h-screen flex flex-col items-center w-full bg-[#fcfcfd]">
                     <header className="bg-[#0f0e32] text-white p-6 md:p-10 sticky top-0 z-50 w-full shadow-2xl flex flex-wrap justify-between items-center border-b border-[#232162]">
-                        <div className="max-w-6xl mx-auto w-full flex flex-col md:flex-row justify-between items-center gap-6">
+                        <div className="max-w-7xl mx-auto w-full flex flex-col md:flex-row justify-between items-center gap-6 px-4">
                             <div className="text-center md:text-left">
-                                <h1 className="text-3xl md:text-4xl font-black italic tracking-tighter uppercase leading-none">Woker</h1>
-                                <p className="text-[10px] text-slate-400 uppercase tracking-[0.4em] font-bold mt-2 opacity-60">Work Tracker for Lawyer</p>
+                                <h1 className="text-4xl md:text-5xl font-black italic tracking-tighter uppercase leading-none">Woker</h1>
+                                <p className="text-[10px] text-slate-400 uppercase tracking-[0.4em] font-bold mt-3 opacity-60">Work Tracker for Lawyer</p>
                             </div>
-                            <div className="flex items-center gap-4 bg-[#161440] px-6 py-4 rounded-[2.5rem] border border-[#232162] shadow-inner">
-                                <button onClick={() => currentMonth === 0 ? (setCurrentMonth(11), setCurrentYear(currentYear-1)) : setCurrentMonth(currentMonth-1)} className="text-slate-400 hover:text-white p-1 text-2xl transition-colors">❮</button>
-                                <div className="text-center min-w-[160px]">
-                                    <div className="text-lg md:text-xl font-black uppercase tracking-widest">{months[currentMonth]}</div>
-                                    <div className="text-[10px] font-mono text-slate-500 font-bold">{currentYear}</div>
+                            <div className="flex items-center gap-5 bg-[#161440] px-8 py-4 rounded-[3rem] border border-[#232162] shadow-2xl">
+                                <button onClick={() => currentMonth === 0 ? (setCurrentMonth(11), setCurrentYear(currentYear-1)) : setCurrentMonth(currentMonth-1)} className="text-slate-400 hover:text-white p-2 text-2xl transition-colors">❮</button>
+                                <div className="text-center min-w-[180px]">
+                                    <div className="text-xl font-black uppercase tracking-[0.1em]">{months[currentMonth]}</div>
+                                    <div className="text-[11px] font-mono text-slate-500 font-bold tracking-widest">{currentYear}</div>
                                 </div>
-                                <button onClick={() => currentMonth === 11 ? (setCurrentMonth(0), setCurrentYear(currentYear+1)) : setCurrentMonth(currentMonth+1)} className="text-slate-400 hover:text-white p-1 text-2xl transition-colors">❯</button>
+                                <button onClick={() => currentMonth === 11 ? (setCurrentMonth(0), setCurrentYear(currentYear+1)) : setCurrentMonth(currentMonth+1)} className="text-slate-400 hover:text-white p-2 text-2xl transition-colors">❯</button>
                             </div>
                         </div>
                     </header>
 
-                    <main className="w-full max-w-6xl mt-8 px-4 md:px-10 pb-20">
-                        <div className="mb-8 flex flex-wrap justify-between items-center px-8 py-5 bg-white border border-slate-100 rounded-[2.5rem] shadow-sm text-[10px] font-black uppercase tracking-widest text-slate-400">
-                            <div className="flex items-center gap-5">
-                                <div className="flex items-center gap-3">
-                                    <div className={`w-3.5 h-3.5 rounded-full ${isCloudSyncing ? 'bg-blue-400 animate-pulse' : 'bg-green-500 shadow-xl shadow-green-500/20'}`}></div>
-                                    <span className="text-[#0f0e32] text-xs">{userName}</span>
+                    <main className="w-full max-w-7xl mt-10 px-6 md:px-12 pb-32">
+                        <div className="mb-10 flex flex-wrap justify-between items-center px-10 py-6 bg-white border border-slate-100 rounded-[3rem] shadow-sm text-[11px] font-black uppercase tracking-[0.2em] text-slate-400">
+                            <div className="flex items-center gap-6">
+                                <div className="flex items-center gap-4">
+                                    <div className={`w-4 h-4 rounded-full ${isCloudSyncing ? 'bg-blue-400 animate-pulse' : 'bg-green-500 shadow-xl shadow-green-500/30'}`}></div>
+                                    <span className="text-[#0f0e32] text-sm font-bold">{userName}</span>
                                 </div>
                                 <span className="opacity-20 hidden md:block">|</span>
                                 <span className="hidden md:block">ID: {accessKey}</span>
                             </div>
-                            <button onClick={handleLogout} className="text-red-500 hover:underline px-4 py-2 hover:bg-red-50 rounded-xl transition-all">Log Out</button>
+                            <button onClick={() => setShowLogoutConfirm(true)} className="text-red-500 font-bold hover:bg-red-50 px-6 py-2 rounded-2xl transition-all">LOG OUT</button>
                         </div>
 
-                        <div className="flex bg-white rounded-[3rem] p-2 border border-slate-100 mb-12 shadow-sm font-bold">
-                            <button onClick={() => setActiveTab('input')} className={`flex-1 py-5 rounded-[2.5rem] text-xs tracking-[0.2em] tab-transition ${activeTab === 'input' ? 'bg-[#0f0e32] text-white shadow-2xl' : 'text-slate-400 hover:bg-slate-50'}`}>PEKERJAAN</button>
-                            <button onClick={() => setActiveTab('rekap')} className={`flex-1 py-5 rounded-[2.5rem] text-xs tracking-[0.2em] tab-transition ${activeTab === 'rekap' ? 'bg-[#0f0e32] text-white shadow-2xl' : 'text-slate-400 hover:bg-slate-50'}`}>LAPORAN BULANAN</button>
+                        <div className="flex bg-white rounded-[3.5rem] p-2.5 border border-slate-100 mb-14 shadow-md font-bold">
+                            <button onClick={() => setActiveTab('input')} className={`flex-1 py-5 rounded-[3rem] text-xs tracking-[0.3em] transition-standard ${activeTab === 'input' ? 'bg-[#0f0e32] text-white shadow-2xl' : 'text-slate-400 hover:bg-slate-50'}`}>PEKERJAAN</button>
+                            <button onClick={() => setActiveTab('rekap')} className={`flex-1 py-5 rounded-[3rem] text-xs tracking-[0.3em] transition-standard ${activeTab === 'rekap' ? 'bg-[#0f0e32] text-white shadow-2xl' : 'text-slate-400 hover:bg-slate-50'}`}>LAPORAN BULANAN</button>
                         </div>
 
                         {activeTab === 'input' ? (
-                            <div className="grid grid-cols-1 lg:grid-cols-12 gap-10">
-                                <div className="lg:col-span-5">
-                                    <form onSubmit={handleSubmit} className="bg-white p-10 rounded-[4rem] legal-card space-y-8 lg:sticky lg:top-48 border-t-[16px] border-t-[#2c2a7b]">
-                                        <h3 className="font-black text-[#0f0e32] text-xl italic border-b pb-6 mb-2 uppercase tracking-tighter">Giat apa hari ini?</h3>
-                                        <div className="space-y-2">
-                                            <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Klien</label>
-                                            <input required type="text" value={formData.client} onChange={e => setFormData({...formData, client: e.target.value})} className="w-full p-4 bg-slate-50 border border-slate-200 rounded-2xl outline-none focus:border-[#2c2a7b] font-bold placeholder:text-slate-300" placeholder="e.g. BANK INDONESIA" />
+                            <div className="app-container">
+                                <div className="lg:sticky lg:top-48">
+                                    <form onSubmit={handleSubmit} className="bg-white p-10 rounded-[4rem] legal-card space-y-8 border-t-[18px] border-t-[#2c2a7b]">
+                                        <h3 className="font-black text-[#0f0e32] text-2xl italic border-b pb-6 mb-2 uppercase tracking-tighter">Giat apa hari ini?</h3>
+                                        <div className="space-y-3">
+                                            <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-2">Klien</label>
+                                            <input required type="text" value={formData.client} onChange={e => setFormData({...formData, client: e.target.value})} className="w-full p-5 bg-slate-50 border border-slate-200 rounded-3xl outline-none focus:border-[#2c2a7b] font-bold text-lg" placeholder="e.g. PT ADIDAYA" />
                                         </div>
-                                        <div className="grid grid-cols-2 gap-4">
-                                            <div className="space-y-2">
-                                                <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Durasi (Jam)</label>
-                                                <input required type="number" step="0.1" value={formData.hours} onChange={e => setFormData({...formData, hours: e.target.value})} className="w-full p-4 bg-slate-50 border border-slate-200 rounded-2xl outline-none font-bold" placeholder="0.0" />
+                                        <div className="grid grid-cols-2 gap-5">
+                                            <div className="space-y-3">
+                                                <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-2">Durasi (Jam)</label>
+                                                <input required type="number" step="0.1" value={formData.hours} onChange={e => setFormData({...formData, hours: e.target.value})} className="w-full p-5 bg-slate-50 border border-slate-200 rounded-3xl outline-none font-bold text-lg" placeholder="0.0" />
                                             </div>
-                                            <div className="space-y-2">
-                                                <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Tanggal</label>
-                                                <input required type="date" value={formData.date} onChange={e => setFormData({...formData, date: e.target.value})} className="w-full p-4 bg-slate-50 border border-slate-200 rounded-2xl outline-none font-bold" />
+                                            <div className="space-y-3">
+                                                <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-2">Tanggal</label>
+                                                <input required type="date" value={formData.date} onChange={e => setFormData({...formData, date: e.target.value})} className="w-full p-5 bg-slate-50 border border-slate-200 rounded-3xl outline-none font-bold text-lg" />
                                             </div>
                                         </div>
-                                        <div className="space-y-2">
-                                            <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Associates</label>
-                                            <input type="text" value={formData.associates} onChange={e => setFormData({...formData, associates: e.target.value})} className="w-full p-4 bg-slate-50 border border-slate-200 rounded-2xl outline-none font-bold placeholder:text-slate-300" placeholder="e.g. Tana, Tini, & Tunu" />
+                                        <div className="space-y-3">
+                                            <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-2">ASSOCIATES</label>
+                                            <input type="text" value={formData.associates} onChange={e => setFormData({...formData, associates: e.target.value})} className="w-full p-5 bg-slate-50 border border-slate-200 rounded-3xl outline-none font-bold text-lg" placeholder="Tana, Tini, & Tunu" />
                                         </div>
-                                        <div className="space-y-2">
-                                            <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Detail Pekerjaan</label>
-                                            <textarea required value={formData.task} onChange={e => setFormData({...formData, task: e.target.value})} className="w-full p-4 bg-slate-50 border border-slate-200 rounded-2xl outline-none min-h-[160px] text-sm font-medium leading-relaxed" placeholder="Uraikan giat Anda hari ini..."></textarea>
+                                        <div className="space-y-3">
+                                            <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-2">Detail Pekerjaan</label>
+                                            <textarea required value={formData.task} onChange={e => setFormData({...formData, task: e.target.value})} className="w-full p-5 bg-slate-50 border border-slate-200 rounded-3xl outline-none min-h-[180px] text-base font-medium leading-relaxed" placeholder="Uraikan giat Anda hari ini..."></textarea>
                                         </div>
-                                        <button className="w-full bg-[#0f0e32] hover:bg-[#161440] text-white font-black py-6 rounded-[2rem] shadow-xl active:scale-95 transition-standard uppercase tracking-[0.2em] text-xs">Simpan Aktivitas</button>
+                                        <button className="w-full bg-[#0f0e32] hover:bg-[#161440] text-white font-black py-7 rounded-[2.5rem] shadow-2xl active:scale-95 transition-standard uppercase tracking-[0.3em] text-xs">Simpan Aktivitas</button>
                                     </form>
                                 </div>
-                                <div className="lg:col-span-7 space-y-8">
-                                    <h3 className="font-black text-[#0f0e32] text-sm uppercase tracking-[0.4em] px-8">RIWAYAT PEKERJAAN</h3>
+                                <div className="space-y-8 mt-12 lg:mt-0">
+                                    <div className="flex justify-between items-center px-10">
+                                        <h3 className="font-black text-[#0f0e32] text-sm uppercase tracking-[0.4em]">RIWAYAT PEKERJAAN</h3>
+                                        <span className="text-[10px] font-black text-slate-400 bg-slate-100 px-5 py-2 rounded-full italic">{filteredEntries.length} Entri</span>
+                                    </div>
                                     {filteredEntries.map(entry => (
-                                        <div key={entry.id} className="bg-white p-8 rounded-[4rem] border border-slate-100 shadow-sm flex items-start gap-8 group relative hover:border-[#2c2a7b]/40 transition-all duration-300">
-                                            <div className="bg-[#0f0e32] text-white w-20 h-20 rounded-[2.5rem] flex flex-col items-center justify-center shrink-0 shadow-xl border border-[#232162]">
-                                                <span className="text-3xl font-black leading-none">{new Date(entry.date).getDate()}</span>
-                                                <span className="text-[9px] uppercase font-black opacity-40 mt-1.5 tracking-widest">{new Date(entry.date).toLocaleDateString('id-ID', {weekday:'short'})}</span>
+                                        <div key={entry.id} className="bg-white p-10 rounded-[4rem] border border-slate-100 shadow-sm flex items-start gap-10 group relative hover:border-[#2c2a7b]/40 transition-all duration-500">
+                                            <div className="bg-[#0f0e32] text-white w-24 h-24 rounded-[2.5rem] flex flex-col items-center justify-center shrink-0 shadow-2xl border border-[#232162]">
+                                                <span className="text-4xl font-black leading-none">{new Date(entry.date).getDate()}</span>
+                                                <span className="text-[10px] uppercase font-black opacity-40 mt-2 tracking-widest">{new Date(entry.date).toLocaleDateString('id-ID', {weekday:'short'})}</span>
                                             </div>
                                             <div className="flex-1 min-w-0">
-                                                <div className="flex flex-wrap items-center gap-4 mb-3">
-                                                    <span className="text-xl font-black text-[#2c2a7b] uppercase tracking-tight truncate">{entry.client}</span>
-                                                    <span className="text-[11px] font-black text-slate-400 bg-slate-50 px-4 py-1.5 rounded-2xl border border-slate-100">{entry.hours}h Kerja</span>
+                                                <div className="flex flex-wrap items-center gap-5 mb-4">
+                                                    <span className="text-2xl font-black text-[#2c2a7b] uppercase tracking-tight truncate">{entry.client}</span>
+                                                    <span className="text-[12px] font-black text-slate-400 bg-slate-50 px-5 py-2 rounded-[1.5rem] border border-slate-100">{entry.hours}h Kerja</span>
                                                 </div>
-                                                <p className="text-[15px] text-slate-700 font-medium mb-5 leading-relaxed italic opacity-90">{entry.task}</p>
-                                                <div className="flex items-center gap-3 text-slate-400">
-                                                    <div className="w-2 h-2 bg-[#2c2a7b] rounded-full"></div>
-                                                    <span className="text-[11px] font-black italic uppercase tracking-wider">With: {entry.associates}</span>
+                                                <p className="text-lg text-slate-700 font-medium mb-6 leading-relaxed italic opacity-90">{entry.task}</p>
+                                                <div className="flex items-center gap-4 text-slate-400">
+                                                    <div className="w-2.5 h-2.5 bg-[#2c2a7b] rounded-full"></div>
+                                                    <span className="text-[12px] font-black italic uppercase tracking-widest opacity-60">Associates: {entry.associates}</span>
                                                 </div>
                                             </div>
-                                            <button onClick={() => handleDelete(entry.id)} className="text-slate-200 hover:text-red-500 p-4 transition-standard md:opacity-0 group-hover:opacity-100 rounded-[1.5rem] hover:bg-red-50"><IconTrash /></button>
+                                            <button onClick={() => handleDelete(entry.id)} className="text-slate-200 hover:text-red-500 p-5 transition-standard lg:opacity-0 group-hover:opacity-100 rounded-[2rem] hover:bg-red-50"><IconTrash /></button>
                                         </div>
                                     ))}
-                                    {filteredEntries.length === 0 && <div className="bg-slate-50/50 border-2 border-dashed border-slate-100 rounded-[5rem] p-40 text-center text-slate-300 font-black uppercase text-[12px] tracking-[0.5em] italic">Database Nihil</div>}
+                                    {filteredEntries.length === 0 && <div className="bg-slate-50/50 border-2 border-dashed border-slate-100 rounded-[5rem] p-40 text-center text-slate-300 font-black uppercase text-sm tracking-[0.6em] italic">Database Nihil</div>}
                                 </div>
                             </div>
                         ) : (
-                            <div className="space-y-14 animate-in fade-in duration-500">
-                                <div className="bg-gradient-to-br from-[#0f0e32] via-[#161440] to-[#232162] text-white p-16 md:p-24 rounded-[6rem] shadow-2xl flex flex-col md:flex-row justify-between items-center gap-16 border border-[#2c2a7b]/30 relative overflow-hidden text-center md:text-left">
-                                    <div className="relative z-10">
-                                        <p className="text-blue-300 text-[12px] font-black uppercase tracking-[0.6em] mb-8 opacity-70">TOTAL WORKING HOURS</p>
-                                        <div className="text-9xl font-black tracking-tighter leading-none mb-10">{totalHours.toFixed(1)} <span className="text-4xl font-light text-slate-400 lowercase italic">h</span></div>
-                                        <p className="text-slate-400 font-bold italic text-base uppercase tracking-[0.5em] border-l-[6px] border-blue-500 pl-10 ml-2">{months[currentMonth]} {currentYear}</p>
+                            <div className="space-y-16 animate-in fade-in duration-500">
+                                <div className="bg-gradient-to-br from-[#0f0e32] via-[#161440] to-[#232162] text-white p-16 md:p-28 rounded-[7rem] shadow-2xl flex flex-col md:flex-row justify-between items-center gap-20 border border-[#2c2a7b]/30 relative overflow-hidden text-center md:text-left">
+                                    <div className="relative z-10 text-center md:text-left">
+                                        <p className="text-blue-300 text-[14px] font-black uppercase tracking-[0.8em] mb-10 opacity-70">TOTAL WORKING HOURS</p>
+                                        <div className="text-[10rem] font-black tracking-tighter leading-none mb-12 drop-shadow-2xl">{totalHours.toFixed(1)} <span className="text-5xl font-light text-slate-400 lowercase italic">h</span></div>
+                                        <p className="text-slate-400 font-bold italic text-lg uppercase tracking-[0.6em] border-l-[8px] border-blue-500 pl-12 ml-3">{months[currentMonth]} {currentYear}</p>
                                     </div>
-                                    <div className="flex flex-col gap-6 w-full md:w-auto relative z-10">
-                                        <button onClick={analyzeMonth} disabled={isAiLoading || filteredEntries.length === 0} className="bg-white text-[#0f0e32] hover:bg-slate-50 px-16 md:px-24 py-8 rounded-[3.5rem] font-black text-sm shadow-2xl transition-standard flex items-center justify-center gap-6 disabled:opacity-50 tracking-[0.2em] uppercase">
-                                            {isAiLoading && <span className="animate-spin-custom w-6 h-6 border-2 border-[#0f0e32] border-t-transparent rounded-full"></span>}
+                                    <div className="flex flex-col gap-8 w-full md:w-auto relative z-10">
+                                        <button onClick={analyzeMonth} disabled={isAiLoading || filteredEntries.length === 0} className="bg-white text-[#0f0e32] hover:bg-slate-50 px-20 md:px-28 py-9 rounded-[4rem] font-black text-base shadow-2xl transition-standard flex items-center justify-center gap-8 disabled:opacity-50 tracking-[0.3em] uppercase">
+                                            {isAiLoading && <span className="animate-spin-custom w-8 h-8 border-2 border-[#0f0e32] border-t-transparent rounded-full"></span>}
                                             Analisis Bulanan
                                         </button>
-                                        <button onClick={exportExcel} className="bg-[#2c2a7b] text-white hover:bg-[#232162] border border-white/10 px-16 md:px-24 py-8 rounded-[3.5rem] font-black text-sm shadow-2xl transition-standard uppercase tracking-[0.2em]">Ekspor Laporan (.XLSX)</button>
+                                        <button onClick={exportExcel} className="bg-[#2c2a7b] text-white hover:bg-[#232162] px-20 md:px-28 py-9 rounded-[4rem] font-black text-base shadow-2xl transition-standard uppercase tracking-[0.3em]">Unduh Laporan Excel</button>
                                     </div>
-                                    <div className="absolute -bottom-32 -right-32 w-96 h-96 bg-[#2c2a7b] rounded-full blur-[120px] opacity-20"></div>
+                                    <div className="absolute -bottom-32 -right-32 w-[600px] h-[600px] bg-[#2c2a7b] rounded-full blur-[150px] opacity-20"></div>
                                 </div>
-
                                 {aiAnalysis && (
-                                    <div className="bg-white border-2 border-slate-100 rounded-[5rem] p-16 md:p-24 animate-in slide-in-from-top-10 relative text-[#0f0e32] leading-relaxed font-bold text-2xl md:text-3xl italic shadow-2xl border-l-[24px] border-l-[#2c2a7b]">
-                                        <div className="mb-10 opacity-30 font-black uppercase text-sm tracking-[0.6em] italic">Executive Insight AI</div>
+                                    <div className="bg-white border-2 border-slate-100 rounded-[6rem] p-16 md:p-28 animate-in slide-in-from-top-14 relative text-[#0f0e32] leading-relaxed font-bold text-3xl md:text-4xl italic shadow-2xl border-l-[32px] border-l-[#2c2a7b]">
+                                        <div className="mb-12 opacity-30 font-black uppercase text-sm tracking-[0.8em] italic">Executive Insight AI</div>
                                         "{aiAnalysis}"
-                                        <button onClick={() => setAiAnalysis(null)} className="absolute top-12 right-20 text-slate-300 font-black uppercase text-xs hover:text-red-500 tracking-[0.3em] transition-colors">Tutup</button>
+                                        <button onClick={() => setAiAnalysis(null)} className="absolute top-14 right-24 text-slate-300 font-black uppercase text-sm hover:text-red-500 transition-colors tracking-widest">Tutup</button>
                                     </div>
                                 )}
-
-                                <div className="bg-white rounded-[5rem] shadow-2xl border border-slate-50 overflow-hidden">
-                                    <div className="overflow-x-auto p-4 md:p-12">
-                                        <table className="w-full text-left min-w-[1000px]">
+                                <div className="bg-white rounded-[6rem] shadow-2xl border border-slate-50 overflow-hidden">
+                                    <div className="overflow-x-auto p-4 md:p-14">
+                                        <table className="w-full text-left min-w-[1100px]">
                                             <thead>
                                                 <tr className="border-b-4 border-slate-50 bg-slate-50/50">
-                                                    <th className="px-12 py-12 font-black uppercase text-slate-400 text-[12px] tracking-[0.5em]">Tgl</th>
-                                                    <th className="px-12 py-12 font-black uppercase text-slate-400 text-[12px] tracking-[0.5em]">KLIEN</th>
-                                                    <th className="px-12 py-12 font-black uppercase text-slate-400 text-[12px] tracking-[0.5em]">ASSOCIATES</th>
-                                                    <th className="px-12 py-12 font-black uppercase text-slate-400 text-[12px] tracking-[0.5em] text-right">Durasi</th>
+                                                    <th className="px-14 py-14 font-black uppercase text-slate-400 text-[14px] tracking-[0.6em]">Tgl</th>
+                                                    <th className="px-14 py-14 font-black uppercase text-slate-400 text-[14px] tracking-[0.6em]">KLIEN</th>
+                                                    <th className="px-14 py-14 font-black uppercase text-slate-400 text-[14px] tracking-[0.6em]">ASSOCIATES</th>
+                                                    <th className="px-14 py-14 font-black uppercase text-slate-400 text-[14px] tracking-[0.6em] text-right">Durasi</th>
                                                 </tr>
                                             </thead>
                                             <tbody className="divide-y-2 divide-slate-50">
@@ -441,16 +476,16 @@
                                                     const clientTotal = clientTasks.reduce((sum, t) => sum + t.hours, 0);
                                                     return (
                                                         <React.Fragment key={clientName}>
-                                                            <tr className="bg-slate-50/80 border-l-[20px] border-[#2c2a7b]">
-                                                                <td colSpan="3" className="px-12 py-10 font-black text-[#0f0e32] uppercase tracking-tighter text-2xl">{clientName}</td>
-                                                                <td className="px-12 py-10 text-right font-black text-[#2c2a7b] text-3xl tracking-tighter italic">SUBTOTAL: {clientTotal.toFixed(1)}h</td>
+                                                            <tr className="bg-slate-50/80 border-l-[24px] border-[#2c2a7b]">
+                                                                <td colSpan="3" className="px-14 py-12 font-black text-[#0f0e32] uppercase tracking-tighter text-3xl">{clientName}</td>
+                                                                <td className="px-14 py-12 text-right font-black text-[#2c2a7b] text-4xl tracking-tighter italic">SUBTOTAL: {clientTotal.toFixed(1)}h</td>
                                                             </tr>
                                                             {clientTasks.map(e => (
                                                                 <tr key={e.id} className="hover:bg-slate-50/40 transition-standard group">
-                                                                    <td className="px-12 py-10 text-slate-400 font-mono text-[16px] font-bold group-hover:text-[#2c2a7b] transition-colors">{e.date.split('-')[2]}/{e.date.split('-')[1]}</td>
-                                                                    <td className="px-12 py-10"><div className="text-[17px] text-slate-600 font-bold leading-relaxed italic opacity-80">{e.task}</div></td>
-                                                                    <td className="px-12 py-10 text-slate-400 text-[14px] font-black uppercase">{e.associates}</td>
-                                                                    <td className="px-12 py-10 text-right font-black text-slate-900 text-2xl tracking-tighter">{e.hours.toFixed(1)}h</td>
+                                                                    <td className="px-14 py-10 text-slate-400 font-mono text-[18px] font-bold group-hover:text-[#2c2a7b] transition-colors">{e.date.split('-')[2]}/{e.date.split('-')[1]}</td>
+                                                                    <td className="px-14 py-10 font-bold text-slate-600 leading-relaxed italic opacity-80">{e.task}</td>
+                                                                    <td className="px-14 py-10 text-slate-400 text-[16px] font-black uppercase">{e.associates}</td>
+                                                                    <td className="px-14 py-10 text-right font-black text-slate-900 text-3xl tracking-tighter">{e.hours.toFixed(1)}h</td>
                                                                 </tr>
                                                             ))}
                                                         </React.Fragment>
@@ -459,8 +494,8 @@
                                             </tbody>
                                             <tfoot>
                                                 <tr className="bg-[#0f0e32] text-white">
-                                                    <td colSpan="3" className="px-12 py-20 text-right font-black uppercase text-[16px] tracking-[0.6em] opacity-40">Monthly Grand Total</td>
-                                                    <td className="px-12 py-20 text-right font-black text-white text-8xl tracking-tighter">{totalHours.toFixed(1)}h</td>
+                                                    <td colSpan="3" className="px-14 py-24 text-right font-black uppercase text-[18px] tracking-[0.8em] opacity-40">Monthly Grand Total</td>
+                                                    <td className="px-14 py-24 text-right font-black text-white text-[10rem] tracking-tighter leading-none">{totalHours.toFixed(1)}h</td>
                                                 </tr>
                                             </tfoot>
                                         </table>
@@ -470,17 +505,27 @@
                         )}
                     </main>
 
-                    <footer className="mt-32 mb-16 opacity-30 text-center px-10">
-                        <p className="text-[12px] font-black uppercase tracking-[0.6em] text-[#0f0e32]">Woker Enterprise Ecosystem • End-to-End Encryption Enabled</p>
-                    </footer>
+                    {/* Custom Logout Confirmation Modal */}
+                    {showLogoutConfirm && (
+                        <div className="fixed inset-0 bg-black/90 backdrop-blur-3xl z-[3000] flex items-center justify-center p-8 text-center animate-in fade-in duration-300">
+                            <div className="bg-white rounded-[5rem] p-16 max-w-lg w-full shadow-2xl border border-slate-100 animate-in zoom-in duration-300">
+                                <div className="w-32 h-2 bg-red-500 mx-auto mb-10 rounded-full opacity-20"></div>
+                                <h4 className="font-black mb-6 text-[#0f0e32] text-4xl tracking-tighter uppercase leading-none italic">Sesi Berakhir?</h4>
+                                <p className="text-slate-500 text-xl mb-14 leading-relaxed font-medium">Data Anda tersimpan di Cloud. Ingin keluar dari akun ini sekarang?</p>
+                                <div className="grid grid-cols-1 gap-4">
+                                    <button onClick={confirmLogout} className="w-full bg-red-500 text-white font-black py-8 rounded-[3rem] uppercase tracking-[0.2em] shadow-xl active:scale-95 transition-standard">YA, LOG OUT</button>
+                                    <button onClick={() => setShowLogoutConfirm(false)} className="w-full bg-slate-100 text-slate-500 font-black py-8 rounded-[3rem] uppercase tracking-[0.2em] active:scale-95 transition-standard">BATAL</button>
+                                </div>
+                            </div>
+                        </div>
+                    )}
 
                     {modalMessage && (
-                        <div className="fixed inset-0 bg-black/85 backdrop-blur-3xl z-[2000] flex items-center justify-center p-8 text-center">
-                            <div className="bg-white rounded-[5rem] p-20 max-w-lg w-full shadow-2xl border border-slate-100 animate-in zoom-in duration-300">
-                                <div className="w-24 h-1.5 bg-[#0f0e32] mx-auto mb-10 rounded-full opacity-20"></div>
-                                <h4 className="font-black mb-6 text-[#0f0e32] text-4xl tracking-tighter uppercase italic">Info</h4>
-                                <p className="text-slate-600 text-xl mb-14 leading-relaxed font-bold">{modalMessage}</p>
-                                <button onClick={() => setModalMessage(null)} className="w-full bg-[#0f0e32] text-white font-black py-8 rounded-[3rem] uppercase tracking-[0.3em] shadow-2xl active:scale-95 transition-standard text-sm">Tutup Dialog</button>
+                        <div className="fixed inset-0 bg-black/90 backdrop-blur-3xl z-[2000] flex items-center justify-center p-10 text-center animate-in fade-in duration-300">
+                            <div className="bg-white rounded-[6rem] p-24 max-w-xl w-full shadow-2xl border border-slate-100 animate-in zoom-in duration-300">
+                                <h4 className="font-black mb-8 text-[#0f0e32] text-5xl tracking-tighter uppercase italic">Info</h4>
+                                <p className="text-slate-600 text-2xl mb-20 leading-relaxed font-bold">{modalMessage}</p>
+                                <button onClick={() => setModalMessage(null)} className="w-full bg-[#0f0e32] text-white font-black py-10 rounded-[3.5rem] uppercase tracking-[0.4em] shadow-2xl active:scale-95 transition-standard text-sm">Tutup Dialog</button>
                             </div>
                         </div>
                     )}
